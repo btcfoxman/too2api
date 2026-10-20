@@ -394,6 +394,14 @@ def admin_task(task_id: str) -> dict[str, Any]:
     return task
 
 
+@app.post("/api/tasks/{task_id}/resume", dependencies=[Depends(admin_auth)])
+def resume_task(task_id: str) -> dict[str, Any]:
+    try:
+        return service.resume_accepted_task(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.delete("/api/tasks", dependencies=[Depends(admin_auth)])
 def clear_tasks() -> dict[str, Any]:
     return {"deleted": store.clear_terminal_tasks()}

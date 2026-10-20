@@ -462,6 +462,22 @@ class Service:
         if retry_on_other_account and not self._stop.is_set():
             self._pool.submit(self._run, task_id)
 
+    def resume_accepted_task(self, task_id: str) -> dict[str, Any]:
+        """Resume polling an accepted task after an account login interruption."""
+        with self._lock:
+            task = self.store.task(task_id)
+            if not task or not task["run_id"] or not task["thread_id"]:
+                raise ValueError("task has no accepted upstream generation")
+            if task["status"] != "failed" or "HTTP 401" not in (task["error_message"] or ""):
+                raise ValueError("only a task stopped by account login can resume")
+            account = self.store.account(int(task["account_id"]), private=True)
+            if not account or account["status"] != "active":
+                raise ValueError("log in and verify the task account before resuming")
+            task = self.store.update_task(task_id, {"status": "running", "progress": 45,
+                "error_code": "", "error_message": "", "completed_at": None})
+            self._pool.submit(self._resume_poll, task_id)
+            return self.public_task(task)
+
     def _poll(self, task_id: str, client: ToonkitClient, deadline: float) -> None:
         errors = 0
         conversion_errors = 0
