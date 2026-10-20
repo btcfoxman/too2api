@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import threading
-import uuid
+import time
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
@@ -15,6 +16,13 @@ from .store import Store
 
 _LOCK_GUARD = threading.RLock()
 _MEDIA_LOCKS: dict[int, threading.RLock] = {}
+_CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _request_ulid() -> str:
+    """Toonkit parses clientRequestId as an uppercase Crockford ULID."""
+    value = ((int(time.time() * 1000) & ((1 << 48) - 1)) << 80) | secrets.randbits(80)
+    return "".join(_CROCKFORD32[(value >> shift) & 31] for shift in range(125, -1, -5))
 
 
 def account_media_lock(account_id: int) -> threading.RLock:
@@ -52,7 +60,7 @@ def build_video_body(normalized: dict[str, Any], assets: dict[str, list[dict[str
             "referenceVideoIds": ids["videos"], "referenceAudioIds": ids["audios"],
             "referenceVideoTotalSeconds": round(sum(float(item.get("duration") or 0)
                                                     for item in assets["videos"]), 3),
-            "count": 1, "clientRequestId": uuid.uuid4().hex[:26]}
+            "count": 1, "clientRequestId": _request_ulid()}
 
 
 def build_music_body(normalized: dict[str, Any], assets: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
@@ -62,7 +70,7 @@ def build_music_body(normalized: dict[str, Any], assets: dict[str, list[dict[str
         "instrumental": normalized["make_instrumental"], "count": 1,
         "style": normalized["tags"], "lyrics": normalized["lyrics"],
         "referenceImageIds": ids["images"], "referenceVideoIds": ids["videos"],
-        "referenceAudioIds": ids["audios"], "clientRequestId": uuid.uuid4().hex[:26]}
+        "referenceAudioIds": ids["audios"], "clientRequestId": _request_ulid()}
     if normalized["custom_mode"]:
         result["title"] = normalized["title"]
     else:

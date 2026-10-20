@@ -3,10 +3,15 @@ import unittest
 from unittest.mock import Mock
 
 from app.catalog import bind_prompt, normalize_request
-from app.client import ToonkitClient, build_music_body, _authorized_media_url
+from app.client import ToonkitClient, build_music_body, _authorized_media_url, _request_ulid
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_request_id_is_crockford_ulid(self):
+        value = _request_ulid()
+        self.assertEqual(len(value), 26)
+        self.assertTrue(set(value) <= set("0123456789ABCDEFGHJKMNPQRSTVWXYZ"))
+
     def test_media_aliases_use_upstream_mentions(self):
         values = {"images": ["x", "y"], "videos": ["z"], "audios": ["a"]}
         text = bind_prompt("图1 img2 video1 音频1", values)
