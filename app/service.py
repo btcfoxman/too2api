@@ -472,6 +472,17 @@ class Service:
             try:
                 state = client.poll(task["run_id"], task["thread_id"])
                 errors = 0
+            except BrowserRejected as exc:
+                if "HTTP 401" in str(exc) or "LOGIN_REQUIRED" in str(exc):
+                    self.store.update_account(int(task["account_id"]),
+                                              {"status": "login_required", "last_error": "Toonkit login required"})
+                    self._stop.wait(30)
+                    continue
+                errors += 1
+                if errors >= 8:
+                    raise
+                time.sleep(min(60, 2 ** errors))
+                continue
             except (BrowserError, ToonkitError):
                 errors += 1
                 if errors >= 8:

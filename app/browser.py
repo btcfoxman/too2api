@@ -256,7 +256,7 @@ class CDPBrowser:
         payload = json.dumps(body, ensure_ascii=True, separators=(",", ":"))
         expression = (
             "(async()=>{const s=await(await fetch('/api/auth/session',{credentials:'include'})).json();"
-            "if(!s.accessToken)return JSON.stringify({http:401,code:'LOGIN_REQUIRED'});"
+            "if(!s?.accessToken)return JSON.stringify({http:401,body:{code:'LOGIN_REQUIRED',message:'Toonkit login required'}});"
             "const r=await fetch(" + json.dumps(path) + ",{method:" + json.dumps(method) + ","
             "credentials:'include',headers:{'authorization':'Bearer '+s.accessToken,"
             "'content-type':'application/json'},"
