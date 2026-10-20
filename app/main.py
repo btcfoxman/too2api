@@ -402,6 +402,14 @@ def resume_task(task_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.post("/api/tasks/{task_id}/persist-result", dependencies=[Depends(admin_auth)])
+def persist_task_result(task_id: str) -> dict[str, Any]:
+    try:
+        return service.persist_completed_task(task_id)
+    except (ValueError, ResultError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.delete("/api/tasks", dependencies=[Depends(admin_auth)])
 def clear_tasks() -> dict[str, Any]:
     return {"deleted": store.clear_terminal_tasks()}
@@ -468,16 +476,21 @@ def get_music(task_id: str) -> dict[str, Any]:
 
 
 @app.get("/v1/assets/{task_id}")
-def get_asset(task_id: str, sig: str) -> FileResponse:
+@app.get("/v1/assets/{task_id}/{index}")
+def get_asset(task_id: str, sig: str, index: int = 0) -> FileResponse:
     if not secrets.compare_digest(sig, signature(task_id)):
         raise HTTPException(status_code=403, detail="invalid result signature")
     try:
-        path = result_path(task_id)
+        task = _task(task_id)
+        kind = task["normalized"].get("kind", "video")
+        path = result_path(task_id, index, kind)
     except ResultError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not path.is_file():
         raise HTTPException(status_code=404, detail="result not found")
-    return FileResponse(path, media_type="video/mp4", filename=f"{task_id}.mp4")
+    suffix = "mp3" if kind == "music" else "mp4"
+    media_type = "audio/mpeg" if kind == "music" else "video/mp4"
+    return FileResponse(path, media_type=media_type, filename=f"{task_id}_{index}.{suffix}")
 
 
 @app.get("/v1/videos/{task_id}/content", dependencies=[Depends(api_auth)])

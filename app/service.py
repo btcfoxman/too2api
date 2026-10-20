@@ -18,7 +18,7 @@ from .catalog import normalize_request
 from .client import ToonkitClient, ToonkitError, account_media_lock
 from .errors import public_error
 from .media import MediaError
-from .result import convert
+from .result import persist
 from .store import Store
 
 
@@ -478,6 +478,20 @@ class Service:
             self._pool.submit(self._resume_poll, task_id)
             return self.public_task(task)
 
+    def persist_completed_task(self, task_id: str) -> dict[str, Any]:
+        task = self.store.task(task_id)
+        if not task or task["status"] != "succeeded" or not task["result_urls"]:
+            raise ValueError("task has no completed result")
+        if all("/v1/assets/" in url for url in task["result_urls"]):
+            return self.public_task(task)
+        account = self.store.account(int(task["account_id"]), private=True)
+        if not account:
+            raise ValueError("task account was removed")
+        urls = [persist(url, task["normalized"], task_id,
+                        str(account.get("proxy_url") or ""), index)
+                for index, url in enumerate(task["result_urls"])]
+        return self.public_task(self.store.update_task(task_id, {"result_urls": urls}))
+
     def _poll(self, task_id: str, client: ToonkitClient, deadline: float) -> None:
         errors = 0
         conversion_errors = 0
@@ -514,17 +528,17 @@ class Service:
                     self._fail(task_id, "RESULT_MISSING", "Toonkit completed without a media URL")
                     return
                 urls = state["result_urls"]
-                if task["normalized"].get("output_resolution"):
-                    try:
-                        urls = [convert(urls[0], task["normalized"], task_id,
-                                        str(client.account.get("proxy_url") or ""))]
-                    except Exception as exc:
-                        conversion_errors += 1
-                        if conversion_errors < 4:
-                            self._stop.wait(10)
-                            continue
-                        self._fail(task_id, "RESULT_CONVERSION_FAILED", str(exc))
-                        return
+                try:
+                    urls = [persist(url, task["normalized"], task_id,
+                                    str(client.account.get("proxy_url") or ""), index)
+                            for index, url in enumerate(urls)]
+                except Exception as exc:
+                    conversion_errors += 1
+                    if conversion_errors < 4:
+                        self._stop.wait(10)
+                        continue
+                    self._fail(task_id, "RESULT_STORAGE_FAILED", str(exc))
+                    return
                 after = None
                 try:
                     after = client.account_state()["available_balance"]
