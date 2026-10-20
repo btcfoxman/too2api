@@ -464,6 +464,7 @@ class Service:
 
     def _poll(self, task_id: str, client: ToonkitClient, deadline: float) -> None:
         errors = 0
+        conversion_errors = 0
         while time.monotonic() < deadline and not self._stop.is_set():
             task = self.store.task(task_id)
             if not task or task["status"] in TERMINAL:
@@ -491,6 +492,10 @@ class Service:
                         urls = [convert(urls[0], task["normalized"], task_id,
                                         str(client.account.get("proxy_url") or ""))]
                     except Exception as exc:
+                        conversion_errors += 1
+                        if conversion_errors < 4:
+                            self._stop.wait(10)
+                            continue
                         self._fail(task_id, "RESULT_CONVERSION_FAILED", str(exc))
                         return
                 after = None

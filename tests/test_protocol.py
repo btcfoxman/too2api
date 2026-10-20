@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock
 
 from app.catalog import bind_prompt, normalize_request
-from app.client import ToonkitClient, build_music_body, build_video_body
+from app.client import ToonkitClient, build_music_body, _authorized_media_url
 
 
 class ProtocolTests(unittest.TestCase):
@@ -41,6 +41,10 @@ class ProtocolTests(unittest.TestCase):
         result = client.poll("generation", json.dumps(["a"]))
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(len(result["result_urls"]), 1)
+
+    def test_private_cdn_uses_session_token(self):
+        url = _authorized_media_url("https://private-cdn.toonkit.io/user/video.mp4", "session-token")
+        self.assertIn("token=session-token", url)
 
 
 if __name__ == "__main__":

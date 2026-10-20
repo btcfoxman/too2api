@@ -11,3 +11,4 @@ research/probe_*.py
 research/scan_bundles.py
 research/summarize.py
 research/clone_adapt.py
+research/export_session.py
