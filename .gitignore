@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+research/captures/
+research/*.log
+.env
+.env.*
+!.env.example
+data/
+.tmp-test/
+research/probe_*.py
+research/scan_bundles.py
+research/summarize.py
+research/clone_adapt.py
