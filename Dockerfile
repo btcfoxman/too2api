@@ -2,7 +2,7 @@ FROM ghcr.io/btcfoxman/ijm2api:64df29824ccdc6c44823a0a7ce14c44834048d9b
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    TOO_CHROME_EXECUTABLE=/usr/bin/google-chrome \
+    TOO_CHROME_EXECUTABLE=/usr/bin/chromium \
     TOO_CHROME_USER_DATA_ROOT=/app/data/chrome-profiles \
     TOO_DATA_DIR=/app/data
 
