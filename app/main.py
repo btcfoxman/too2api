@@ -155,7 +155,7 @@ def home(too_admin: str | None = Cookie(default=None),
 
 @app.get("/api/settings", dependencies=[Depends(admin_auth)])
 def settings() -> dict[str, Any]:
-    return service.settings()
+    return service.public_settings()
 
 
 @app.patch("/api/settings", dependencies=[Depends(admin_auth)])
@@ -376,8 +376,10 @@ def model_costs() -> list[dict[str, Any]]:
 def admin_tasks(limit: int = 100) -> list[dict[str, Any]]:
     tasks = store.tasks(max(1, min(limit, 10000)))
     for task in tasks:
+        task["public_result"] = service.prepare_public_task(task)
+        task["result_urls"] = [item["url"] for item in task["public_result"]["data"]]
         if task["status"] in {"failed", "expired"}:
-            task["public_error"] = service.public_task(task)["error"]
+            task["public_error"] = service.prepare_public_task(task)["error"]
     return tasks
 
 
@@ -389,8 +391,10 @@ def admin_create_task(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
 @app.get("/api/tasks/{task_id}", dependencies=[Depends(admin_auth)])
 def admin_task(task_id: str) -> dict[str, Any]:
     task = _task(task_id)
+    task["public_result"] = service.prepare_public_task(task)
+    task["result_urls"] = [item["url"] for item in task["public_result"]["data"]]
     if task["status"] in {"failed", "expired"}:
-        task["public_error"] = service.public_task(task)["error"]
+        task["public_error"] = service.prepare_public_task(task)["error"]
     return task
 
 
@@ -441,10 +445,11 @@ def _create(body: dict[str, Any]) -> dict[str, Any]:
         deadline = time.monotonic() + min(900, int(service.settings()["task_timeout_seconds"]))
         while time.monotonic() < deadline:
             task = _task(result["id"])
-            if task["status"] in {"succeeded", "failed", "expired"}:
-                return service.public_task(task)
+            public = service.prepare_public_task(task)
+            if public["status"] in {"succeeded", "failed", "expired"}:
+                return public
             time.sleep(2)
-    return result
+    return service.prepare_public_task(_task(result["id"]))
 
 
 @app.post("/v1/videos", dependencies=[Depends(api_auth)])
@@ -464,7 +469,7 @@ def create_music(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
 @app.get("/v1/videos/{task_id}", dependencies=[Depends(api_auth)])
 @app.get("/api/videos/{task_id}", dependencies=[Depends(api_auth)])
 def get_video(task_id: str) -> dict[str, Any]:
-    return service.public_task(_task(task_id))
+    return service.prepare_public_task(_task(task_id))
 
 
 @app.get("/v1/music/{task_id}", dependencies=[Depends(api_auth)])
@@ -472,16 +477,20 @@ def get_music(task_id: str) -> dict[str, Any]:
     task = _task(task_id)
     if task["normalized"].get("kind") != "music":
         raise HTTPException(status_code=404, detail="music task not found")
-    return service.public_task(task)
+    return service.prepare_public_task(task)
 
 
 @app.get("/v1/assets/{task_id}")
 @app.get("/v1/assets/{task_id}/{index}")
-def get_asset(task_id: str, sig: str, index: int = 0) -> FileResponse:
+def get_asset(task_id: str, sig: str, index: int = 0):
     if not secrets.compare_digest(sig, signature(task_id)):
         raise HTTPException(status_code=403, detail="invalid result signature")
     try:
         task = _task(task_id)
+        public = service.prepare_public_task(task)
+        if (public["status"] == "succeeded" and 0 <= index < len(public["data"])
+                and "/v1/assets/" not in public["data"][index]["url"]):
+            return RedirectResponse(public["data"][index]["url"], status_code=307)
         kind = task["normalized"].get("kind", "video")
         path = result_path(task_id, index, kind)
     except ResultError as exc:
@@ -494,11 +503,12 @@ def get_asset(task_id: str, sig: str, index: int = 0) -> FileResponse:
 
 
 @app.get("/v1/videos/{task_id}/content", dependencies=[Depends(api_auth)])
-def get_video_content(task_id: str) -> RedirectResponse:
-    task = _task(task_id)
-    if task["status"] != "succeeded" or not task["result_urls"]:
-        raise HTTPException(status_code=409, detail="video is not ready")
-    return RedirectResponse(task["result_urls"][0], status_code=307)
+@app.get("/v1/music/{task_id}/content", dependencies=[Depends(api_auth)])
+def get_video_content(task_id: str, index: int = 0) -> RedirectResponse:
+    task = service.prepare_public_task(_task(task_id))
+    if task["status"] != "succeeded" or not 0 <= index < len(task["data"]):
+        raise HTTPException(status_code=409, detail="result delivery is not ready")
+    return RedirectResponse(task["data"][index]["url"], status_code=307)
 
 
 @app.post("/api/v3/contents/generations/tasks", dependencies=[Depends(api_auth)])
@@ -508,4 +518,4 @@ def create_generic(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 @app.get("/api/v3/contents/generations/tasks/{task_id}", dependencies=[Depends(api_auth)])
 def get_generic(task_id: str) -> dict[str, Any]:
-    return service.public_task(_task(task_id))
+    return service.prepare_public_task(_task(task_id))

@@ -18,7 +18,8 @@ from .catalog import normalize_request
 from .client import ToonkitClient, ToonkitError, account_media_lock
 from .errors import public_error
 from .media import MediaError
-from .result import persist
+from .result import result_path
+from .result_transfer import ResultTransferError, config as storage_config, deliver, presign, expires_soon
 from .store import Store
 
 
@@ -83,6 +84,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "allow_video_reference_inputs": True,
     "excess_media_policy": "reject",
     "prompt_media_reference_cleanup_enabled": True,
+    "result_s3_center_api_base": os.getenv("TOO_S3_CENTER_API_BASE", ""),
+    "result_s3_center_token": os.getenv("TOO_S3_CENTER_TOKEN", ""),
+    "result_s3_bucket": os.getenv("TOO_S3_CENTER_BUCKET", "assets"),
+    "result_s3_key_prefix": os.getenv("TOO_S3_CENTER_KEY_PREFIX", "aicontent/ai-too"),
 }
 
 
@@ -99,24 +104,45 @@ class Service:
         self.browser_runtime = BrowserRuntime(store, self.settings)
         self._browser_views: dict[int, tuple[dict[str, Any], bool, float]] = {}
         self._browser_views_lock = threading.RLock()
+        self._result_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="too-results")
+        self._result_pending: set[str] = set()
+        self._result_locks: dict[str, threading.RLock] = {}
+        self._result_maintenance: threading.Thread | None = None
 
     def settings(self) -> dict[str, Any]:
         return {**DEFAULT_SETTINGS, **self.store.get_settings()}
 
+    def public_settings(self) -> dict[str, Any]:
+        values = self.settings()
+        values["result_s3_center_token_configured"] = bool(values.get("result_s3_center_token"))
+        values["result_s3_center_token"] = ""
+        return values
+
     def update_settings(self, values: dict[str, Any]) -> dict[str, Any]:
         allowed = set(DEFAULT_SETTINGS)
         filtered = {key: value for key, value in values.items() if key in allowed}
+        if "result_s3_center_token" in filtered and not str(filtered["result_s3_center_token"] or "").strip():
+            filtered.pop("result_s3_center_token")
         for key in ("task_workers", "task_queue_capacity", "poll_interval_seconds", "task_timeout_seconds"):
             if key in filtered and not 1 <= int(filtered[key]) <= (3600 if key != "task_queue_capacity" else 10000):
                 raise ValueError(f"invalid {key}")
+        candidate = {**self.settings(), **filtered}
+        if any(key.startswith("result_s3_") for key in filtered) and candidate.get("result_s3_center_api_base") and candidate.get("result_s3_center_token"):
+            try:
+                storage_config(candidate)
+            except ResultTransferError as exc:
+                raise ValueError(str(exc)) from exc
         self.store.update_settings(filtered)
-        return self.settings()
+        return self.public_settings()
 
     def start(self) -> None:
         self._started = True
         self._maintenance = threading.Thread(target=self._maintain_accounts, daemon=True,
                                              name="too-account-maintenance")
         self._maintenance.start()
+        self._result_maintenance = threading.Thread(target=self._maintain_results, daemon=True,
+                                                   name="too-result-maintenance")
+        self._result_maintenance.start()
         for task in reversed(self.store.tasks(1000)):
             if task["status"] == "queued":
                 self._pool.submit(self._run, task["id"])
@@ -140,7 +166,10 @@ class Service:
         self._stop.set()
         if self._maintenance and self._maintenance.is_alive():
             self._maintenance.join(timeout=5)
+        if self._result_maintenance and self._result_maintenance.is_alive():
+            self._result_maintenance.join(timeout=5)
         self._pool.shutdown(wait=False, cancel_futures=False)
+        self._result_pool.shutdown(wait=False, cancel_futures=False)
         for account_id in list(self._browser_views):
             self.close_browser_view(account_id)
         self.browser_runtime.close_all_idle()
@@ -224,7 +253,7 @@ class Service:
         if estimated_cost:
             task = self.store.update_task(task_id, {"estimated_cost": estimated_cost})
         self._pool.submit(self._run, task_id)
-        return self.public_task(task)
+        return self.prepare_public_task(task)
 
     def _reserve_account(self, estimated_cost: float = 0, *,
                          exclude_ids: set[int] | None = None) -> dict[str, Any] | None:
@@ -476,25 +505,136 @@ class Service:
             task = self.store.update_task(task_id, {"status": "running", "progress": 45,
                 "error_code": "", "error_message": "", "completed_at": None})
             self._pool.submit(self._resume_poll, task_id)
-            return self.public_task(task)
+            return self.prepare_public_task(task)
 
     def persist_completed_task(self, task_id: str) -> dict[str, Any]:
         task = self.store.task(task_id)
-        if not task or task["status"] != "succeeded" or not task["result_urls"]:
+        if not task or task["status"] != "succeeded":
             raise ValueError("task has no completed result")
-        if all("/v1/assets/" in url for url in task["result_urls"]):
-            return self.public_task(task)
-        account = self.store.account(int(task["account_id"]), private=True)
-        if not account:
-            raise ValueError("task account was removed")
-        urls = [persist(url, task["normalized"], task_id,
-                        str(account.get("proxy_url") or ""), index)
-                for index, url in enumerate(task["result_urls"])]
-        return self.public_task(self.store.update_task(task_id, {"result_urls": urls}))
+        self._deliver_completed(task_id, force=True)
+        return self.prepare_public_task(self.store.task(task_id) or task)
+
+    def _result_lock(self, task_id: str):
+        with self._lock:
+            return self._result_locks.setdefault(task_id, threading.RLock())
+
+    def _storage_configured(self) -> bool:
+        try:
+            storage_config(self.settings())
+            return True
+        except ResultTransferError:
+            return False
+
+    def _deliver_completed(self, task_id: str, *, force: bool = False) -> dict[str, Any]:
+        """Deliver existing outputs only; generation and billing are already final."""
+        with self._result_lock(task_id):
+            task = self.store.task(task_id)
+            if not task or task["status"] != "succeeded":
+                raise ValueError("task has no completed upstream result")
+            transfer = dict(task.get("result_transfer") or {})
+            sources = list(transfer.get("upstream_urls") or task["result_urls"])
+            if not sources:
+                raise ValueError("task has no saved result sources")
+            account = self.store.account(int(task["account_id"]), private=True) if task.get("account_id") else None
+            items = list(transfer.get("items") or [])
+            while len(items) < len(sources):
+                items.append({})
+            transfer.update(status="pending", upstream_urls=sources, items=items, last_attempt_at=time.time())
+            self.store.update_task(task_id, {"result_transfer": transfer})
+            try:
+                # Missing legacy cache or an expired upstream link can only be
+                # recovered by querying this accepted run, never by submitting.
+                missing = [index for index, source in enumerate(sources)
+                           if not items[index].get("backend")
+                           and not result_path(task_id, index, task["normalized"].get("kind", "video")).is_file()
+                           and ("/v1/assets/" in source or int(transfer.get("attempts") or 0) > 0)]
+                if missing and account and task.get("run_id") and task.get("thread_id"):
+                    with self.browser_runtime.lease(account) as current:
+                        existing = ToonkitClient(current).poll(task["run_id"], task["thread_id"])
+                    refreshed = existing.get("result_urls") or []
+                    if existing.get("status") != "succeeded" or len(refreshed) != len(sources):
+                        raise ResultTransferError("original generation results are not available for delivery")
+                    for index in missing:
+                        sources[index] = refreshed[index]
+                    transfer["upstream_urls"] = sources
+                    self.store.update_task(task_id, {"result_transfer": transfer})
+                urls = []
+                for index, source in enumerate(sources):
+                    item = items[index]
+                    if item.get("backend") == "s3_center_direct":
+                        if expires_soon(item):
+                            url, item = presign(item, self.settings())
+                        else:
+                            url = item["url"]
+                    elif item.get("backend") == "upstream" and not force:
+                        url = item["url"]
+                    else:
+                        url, item = deliver(source, task["normalized"], task_id,
+                                            str((account or {}).get("proxy_url") or ""), index, self.settings())
+                    items[index] = item
+                    urls.append(url)
+                    transfer["items"] = items
+                    # Each completed clip survives a later clip's failure.
+                    self.store.update_task(task_id, {"result_transfer": transfer})
+                transfer.update(status="ready", last_error="", next_retry_at=0)
+                return self.store.update_task(task_id, {"result_urls": urls, "result_transfer": transfer})
+            except Exception as exc:
+                attempts = int(transfer.get("attempts") or 0) + 1
+                transfer.update(status="pending", attempts=attempts,
+                                last_error=str(exc)[:300] if isinstance(exc, ResultTransferError) else type(exc).__name__,
+                                next_retry_at=time.time() + min(300, 10 * 2 ** min(attempts, 5)))
+                return self.store.update_task(task_id, {"result_transfer": transfer})
+
+    def _schedule_result_retry(self, task: dict[str, Any]) -> None:
+        task_id = task["id"]
+        transfer = task.get("result_transfer") or {}
+        if not self._started or self._stop.is_set() or float(transfer.get("next_retry_at") or 0) > time.time():
+            return
+        if not transfer and not self._storage_configured():
+            # Do not rewrite historical task rows during an unconfigured rollout.
+            return
+        with self._lock:
+            if task_id in self._result_pending or len(self._result_pending) >= 20:
+                return
+            self._result_pending.add(task_id)
+
+        def retry():
+            try:
+                self._deliver_completed(task_id)
+            except Exception as exc:
+                logger.warning("TOO result delivery %s interrupted: %s", task_id, type(exc).__name__)
+            finally:
+                with self._lock:
+                    self._result_pending.discard(task_id)
+        try:
+            self._result_pool.submit(retry)
+        except RuntimeError:
+            with self._lock:
+                self._result_pending.discard(task_id)
+
+    def retry_pending_results(self, limit: int = 100) -> None:
+        for task in self.store.pending_result_tasks(limit, include_legacy=self._storage_configured()):
+            self._schedule_result_retry(task)
+
+    def _maintain_results(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.retry_pending_results()
+            except Exception as exc:
+                logger.warning("TOO result maintenance interrupted: %s", type(exc).__name__)
+            self._stop.wait(10)
+
+    def prepare_public_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        if task["status"] == "succeeded":
+            transfer = task.get("result_transfer") or {}
+            if transfer.get("status") != "ready" or any(
+                    item.get("backend") == "s3_center_direct" and expires_soon(item)
+                    for item in transfer.get("items", [])):
+                self._schedule_result_retry(task)
+        return self.public_task(task)
 
     def _poll(self, task_id: str, client: ToonkitClient, deadline: float) -> None:
         errors = 0
-        conversion_errors = 0
         while time.monotonic() < deadline and not self._stop.is_set():
             task = self.store.task(task_id)
             if not task or task["status"] in TERMINAL:
@@ -528,17 +668,6 @@ class Service:
                     self._fail(task_id, "RESULT_MISSING", "Toonkit completed without a media URL")
                     return
                 urls = state["result_urls"]
-                try:
-                    urls = [persist(url, task["normalized"], task_id,
-                                    str(client.account.get("proxy_url") or ""), index)
-                            for index, url in enumerate(urls)]
-                except Exception as exc:
-                    conversion_errors += 1
-                    if conversion_errors < 4:
-                        self._stop.wait(10)
-                        continue
-                    self._fail(task_id, "RESULT_STORAGE_FAILED", str(exc))
-                    return
                 after = None
                 try:
                     after = client.account_state()["available_balance"]
@@ -549,11 +678,17 @@ class Service:
                 finished_at = time.time()
                 isolated = not self.store.has_account_overlap(
                     int(task["account_id"]), task_id, task["created_at"], finished_at)
-                self.store.update_task(task_id, {"status": "succeeded", "progress": 100,
-                    "result_urls": urls, "balance_after": after,
+                completed = self.store.update_task(task_id, {"status": "succeeded", "progress": 100,
+                    "result_urls": [], "result_transfer": {"status": "pending", "upstream_urls": urls, "items": []}, "balance_after": after,
                     "actual_cost": max(0, float(before) - float(after))
                         if isolated and before is not None and after is not None else None,
                     "completed_at": finished_at})
+                # This separate pool never holds a generation/account slot for
+                # downloading, uploading or retrying an already completed run.
+                try:
+                    self._schedule_result_retry(completed)
+                except Exception as exc:
+                    logger.warning("TOO generated result %s awaits delivery: %s", task_id, type(exc).__name__)
                 return
             if state["status"] == "failed":
                 reason = state["error"] or "Toonkit generation failed"
@@ -589,6 +724,11 @@ class Service:
 
     @staticmethod
     def public_task(task: dict[str, Any]) -> dict[str, Any]:
+        transfer = task.get("result_transfer") or {}
+        if task["status"] == "succeeded" and (transfer.get("status") != "ready" or any(
+                item.get("backend") == "s3_center_direct" and expires_soon(item)
+                for item in transfer.get("items", []))):
+            task = {**task, "status": "running", "progress": 95, "result_urls": []}
         result = {"id": task["id"], "object": task["normalized"].get("kind", "video"), "created_at": task["created_at"],
                   "status": task["status"], "model": task["model"], "progress": task["progress"],
                   "data": [{"url": url} for url in task["result_urls"]],

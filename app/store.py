@@ -55,6 +55,7 @@ class Store:
                     request_json TEXT NOT NULL,
                     normalized_json TEXT NOT NULL,
                     result_json TEXT NOT NULL DEFAULT '[]',
+                    result_transfer_json TEXT NOT NULL DEFAULT '{}',
                     media_inputs_json TEXT NOT NULL DEFAULT '[]',
                     thread_id TEXT NOT NULL DEFAULT '',
                     run_id TEXT NOT NULL DEFAULT '',
@@ -91,6 +92,8 @@ class Store:
                 db.execute("ALTER TABLE accounts ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
             if "attempted_account_ids_json" not in {row[1] for row in db.execute("PRAGMA table_info(tasks)")}:
                 db.execute("ALTER TABLE tasks ADD COLUMN attempted_account_ids_json TEXT NOT NULL DEFAULT '[]'")
+            if "result_transfer_json" not in {row[1] for row in db.execute("PRAGMA table_info(tasks)")}:
+                db.execute("ALTER TABLE tasks ADD COLUMN result_transfer_json TEXT NOT NULL DEFAULT '{}'")
             if "duration" not in {row[1] for row in db.execute("PRAGMA table_info(media_cache)")}:
                 db.execute("ALTER TABLE media_cache ADD COLUMN duration REAL NOT NULL DEFAULT 0")
         try:
@@ -123,6 +126,7 @@ class Store:
         value["request"] = json.loads(value.pop("request_json"))
         value["normalized"] = json.loads(value.pop("normalized_json"))
         value["result_urls"] = json.loads(value.pop("result_json"))
+        value["result_transfer"] = json.loads(value.pop("result_transfer_json"))
         value["media_inputs"] = json.loads(value.pop("media_inputs_json"))
         value["prompt"] = value["request"].get("prompt", "")
         value["channel"] = "tooapi"
@@ -282,12 +286,22 @@ class Store:
             rows = db.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [self._task(row) for row in rows]
 
+    def pending_result_tasks(self, limit: int = 100, *, include_legacy: bool = False) -> list[dict[str, Any]]:
+        legacy = " OR result_transfer_json='{}'" if include_legacy else ""
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM tasks WHERE status='succeeded' AND "
+                "(json_extract(result_transfer_json,'$.status')='pending'" + legacy + ") "
+                "ORDER BY updated_at ASC LIMIT ?", (max(1, min(limit, 1000)),)).fetchall()
+        return [self._task(row) for row in rows]
+
     def update_task(self, task_id: str, values: dict[str, Any]) -> dict[str, Any]:
         data = {key: value for key, value in values.items() if key in {"account_id", "status", "progress",
             "thread_id", "run_id", "error_code", "error_message", "estimated_cost", "actual_cost",
             "balance_before", "balance_after", "completed_at"}}
         if "result_urls" in values:
             data["result_json"] = _json(values["result_urls"])
+        if "result_transfer" in values:
+            data["result_transfer_json"] = _json(values["result_transfer"])
         if "attempted_account_ids" in values:
             data["attempted_account_ids_json"] = _json(values["attempted_account_ids"])
         data["updated_at"] = time.time()

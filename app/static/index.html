@@ -7,7 +7,7 @@
   <title>TOO2API Console</title>
   <link rel="stylesheet" href="/static/styles.css?v=20261014-3">
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
-  <script src="/static/app.js?v=20261014-2" defer></script>
+  <script src="/static/app.js?v=20261025-s3-results" defer></script>
   <script src="/static/browser-assist.js?v=20261011-1" defer></script>
   <script src="/static/account-login.js?v=20261014-2" defer></script>
 </head>
@@ -129,6 +129,7 @@
       <fieldset class="settings-card account-settings-card"><legend>任务与账号维护</legend><div class="form-grid settings-form-grid"><label>任务并发数<input name="task_workers" type="number" min="1" max="50" required></label><label>排队容量<input name="task_queue_capacity" type="number" min="0" max="10000" required></label><label>轮询间隔（秒）<input name="poll_interval_seconds" type="number" min="2" max="120" required></label><label>任务超时（秒）<input name="task_timeout_seconds" type="number" min="60" max="7200" required></label><label>低余额自动禁用<input name="low_balance_disable_threshold" type="number" min="0" step="0.01" required></label><label class="check"><input name="daily_checkin_enabled" type="checkbox">启用每日签到</label></div></fieldset>
       <fieldset class="settings-card browser-settings-card"><legend>浏览器与 CDP</legend><div class="form-grid settings-form-grid"><label class="wide">Chrome 可执行文件<input name="chrome_executable" class="mono"></label><label class="wide">Chrome Profile 根目录<input name="chrome_user_data_root" class="mono"></label></div></fieldset>
       <fieldset class="settings-card normalization-settings-card"><legend>参考素材</legend><div class="form-grid settings-form-grid"><label class="check"><input name="allow_video_reference_inputs" type="checkbox">允许输入视频参考素材</label><label class="check"><input name="prompt_media_reference_cleanup_enabled" type="checkbox">转换提示词中的素材编号为 Toonkit 引用</label></div></fieldset>
+      <fieldset class="settings-card"><legend>结果交付 · S3 Center</legend><p>可直接访问的公网原地址优先保留；其余结果转存 S3 Center。生成完成后独立重试交付，不重复生成或扣费。</p><div class="form-grid settings-form-grid"><label class="wide">S3 Center API 地址<input name="result_s3_center_api_base" type="url" placeholder="http://s3-center:port"></label><label class="wide">访问令牌<input name="result_s3_center_token" type="password" autocomplete="new-password" placeholder="输入 S3 Center 令牌"></label><label>Bucket<input name="result_s3_bucket" placeholder="assets"></label><label>对象前缀<input name="result_s3_key_prefix" placeholder="aicontent/ai-too"></label></div></fieldset>
     </div>
     <footer class="settings-dialog-footer"><span>保存后立即作用于新任务</span><div><button class="button close" type="button">取消</button><button class="button primary" type="submit"><i data-lucide="save"></i><span>保存运行设置</span></button></div></footer>
   </form></dialog>
