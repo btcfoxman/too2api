@@ -75,6 +75,10 @@ def build_music_body(normalized: dict[str, Any], assets: dict[str, list[dict[str
         result["title"] = normalized["title"]
     else:
         result["prompt"] = normalized["prompt"]
+        # Toonkit counts style/lyrics and references as DEFAULT attachments;
+        # prompt alone is an instruction and does not satisfy its minimum.
+        if not result["style"] and not result["lyrics"] and not any(ids.values()):
+            result["style"] = normalized["prompt"]
     return result
 
 

@@ -143,6 +143,15 @@ def normalize_request(body: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("music text exceeds Toonkit limits")
         if len(media["images"]) > 5 or len(media["videos"]) > 1 or sum(map(len, media.values())) > 10:
             raise ValueError("music reference media exceeds Toonkit limits")
+        if not custom:
+            # Match the official DEFAULT composer: instructions are not an
+            # attachment; a lone description becomes its style attachment.
+            default_style = tags or (prompt if not lyrics and not any(media.values()) else "")
+            attachment_count = sum(map(len, media.values())) + bool(default_style) + bool(lyrics)
+            if len(default_style) > 1000:
+                raise ValueError("default music description without references exceeds Toonkit style limit")
+            if not 1 <= attachment_count <= 10:
+                raise ValueError("default music requires 1-10 text and media attachments")
         return {"model": name, "upstream_model": MUSIC_MODELS[name], "kind": "music",
                 "duration": 0, "resolution": "", "aspect_ratio": "", "prompt": prompt,
                 "title": title, "lyrics": lyrics, "tags": tags, "custom_mode": custom,

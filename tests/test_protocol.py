@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import unittest
 from unittest.mock import Mock
 
@@ -64,6 +65,53 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(body["mode"], "DEFAULT")
         self.assertFalse(body["instrumental"])
         self.assertEqual(body["prompt"], "short music")
+
+    def test_default_description_supplies_a_counted_style_attachment(self):
+        description = "A warm acoustic folk song about a quiet morning by a lake."
+        request = normalize_request({"model": "suno-v6", "prompt": description})
+        body = build_music_body(request, {"images": [], "videos": [], "audios": []})
+        self.assertEqual(body["mode"], "DEFAULT")
+        self.assertEqual(body["style"], description)
+        self.assertEqual(body["prompt"], description)
+        self.assertNotIn("attachments", body)
+
+    def test_default_payload_satisfies_captured_official_attachment_contract(self):
+        capabilities=json.loads((Path(__file__).parent/"fixtures/toonkit_music_capabilities.json").read_text())
+        limits=capabilities["limits"]
+        self.assertTrue(limits["defaultRequiresStyleLyricsOrReference"])
+        self.assertTrue(limits["styleAndLyricsCountAsAttachments"])
+        self.assertEqual(limits["styleMaxLength"],1000)
+        for model in ("suno-v6","suno-v6-mini","suno-v6-wild"):
+            with self.subTest(model=model):
+                body=build_music_body(normalize_request({"model":model,"prompt":"Warm acoustic folk song"}),
+                                      {"images":[],"videos":[],"audios":[]})
+                counted=sum(len(body[k]) for k in ("referenceImageIds","referenceVideoIds","referenceAudioIds"))+bool(body["style"])+bool(body["lyrics"])
+                self.assertGreaterEqual(counted,1)
+                self.assertLessEqual(counted,limits["maxAttachments"])
+                self.assertLessEqual(len(body["style"]),limits["styleMaxLength"])
+
+    def test_default_explicit_style_lyrics_and_reference_inputs_are_preserved(self):
+        for extra,assets in (({"tags":"folk"},{"images":[],"videos":[],"audios":[]}),
+                             ({"lyrics":"Exact verse"},{"images":[],"videos":[],"audios":[]}),
+                             ({"image_urls":["toonkit:ref"]},{"images":[{"toonkit_asset_id":"ref"}],"videos":[],"audios":[]})):
+            with self.subTest(extra=extra):
+                request=normalize_request({"model":"suno-v6","prompt":"instruction",**extra})
+                body=build_music_body(request,assets)
+                self.assertEqual(body["style"],extra.get("tags",""))
+                self.assertEqual(body["lyrics"],extra.get("lyrics",""))
+                self.assertEqual(body["referenceImageIds"],["ref"] if assets["images"] else [])
+
+    def test_default_counted_text_and_media_limits_fail_before_submission(self):
+        self.assertEqual(build_music_body(normalize_request({"model":"suno-v6","prompt":"x"*1000}),
+                                         {"images":[],"videos":[],"audios":[]})["style"],"x"*1000)
+        with self.assertRaisesRegex(ValueError,"style limit"):
+            normalize_request({"model":"suno-v6","prompt":"x"*1001})
+        # A real reference satisfies the minimum without copying a long
+        # instruction into the smaller style field.
+        normalize_request({"model":"suno-v6","prompt":"x"*3000,"audio_urls":["toonkit:a"]})
+        normalize_request({"model":"suno-v6","tags":"folk","audio_urls":["toonkit:a"]*9})
+        with self.assertRaisesRegex(ValueError,"1-10"):
+            normalize_request({"model":"suno-v6","tags":"folk","lyrics":"verse","audio_urls":["toonkit:a"]*9})
 
     def test_custom_instrumental_needs_title_but_no_lyrics(self):
         request = normalize_request({"model": "suno-v6", "customMode": True,

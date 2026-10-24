@@ -1,0 +1,69 @@
+{
+  "limits": {
+    "promptMaxLength": 3000,
+    "styleMaxLength": 1000,
+    "lyricsMaxLength": 5000,
+    "titleMaxLength": 80,
+    "negativeTagsMaxLength": 1000,
+    "maxAttachments": 10,
+    "maxImages": 5,
+    "maxVideos": 1,
+    "imageMaxBytes": 10000000,
+    "videoMaxBytes": 100000000,
+    "audioMaxBytes": 500000000,
+    "imageFormats": [
+      "JPEG",
+      "PNG",
+      "WEBP",
+      "BMP"
+    ],
+    "videoFormats": [
+      "MP4",
+      "MOV",
+      "WEBM"
+    ],
+    "customTitleRequired": true,
+    "referencesMode": "DEFAULT",
+    "customDurationMinSeconds": 10,
+    "customDurationMaxSeconds": 360,
+    "videoMaxSeconds": 241,
+    "audioMinSeconds": 6,
+    "audioMaxSeconds": 1800,
+    "vocalGenders": [
+      "MALE",
+      "FEMALE"
+    ],
+    "varietyValues": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "weightMin": 0,
+    "weightMax": 1,
+    "weightStep": 0.01,
+    "defaultRequiresStyleLyricsOrReference": true,
+    "styleAndLyricsCountAsAttachments": true
+  },
+  "modes": [
+    "DEFAULT",
+    "CUSTOM"
+  ],
+  "maxCount": 4,
+  "models": [
+    {
+      "id": "SUNO_V6",
+      "expectedOutputCount": 2
+    },
+    {
+      "id": "SUNO_V6_MINI",
+      "expectedOutputCount": 2
+    },
+    {
+      "id": "SUNO_V6_WILD",
+      "expectedOutputCount": 2
+    }
+  ],
+  "source": "https://toonkit.io/api/v1/quickstart/music/capabilities"
+}
