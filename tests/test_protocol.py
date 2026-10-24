@@ -47,6 +47,30 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(len(result["result_urls"]), 1)
 
+    def test_standard_suno_custom_alias_preserves_full_lyrics(self):
+        lyrics = "line\n" * 900
+        request = normalize_request({"model": "suno-v6", "customMode": "true",
+                                     "title": "A song", "prompt": lyrics, "style": "pop"})
+        body = build_music_body(request, {"images": [], "videos": [], "audios": []})
+        self.assertEqual(body["mode"], "CUSTOM")
+        self.assertEqual(body["lyrics"], lyrics.strip())
+        self.assertEqual(body["style"], "pop")
+        self.assertNotIn("prompt", body)
+
+    def test_string_false_is_not_custom_or_instrumental(self):
+        request = normalize_request({"model": "suno-v6", "prompt": "short music",
+                                     "custom_mode": "false", "make_instrumental": "false"})
+        body = build_music_body(request, {"images": [], "videos": [], "audios": []})
+        self.assertEqual(body["mode"], "DEFAULT")
+        self.assertFalse(body["instrumental"])
+        self.assertEqual(body["prompt"], "short music")
+
+    def test_custom_instrumental_needs_title_but_no_lyrics(self):
+        request = normalize_request({"model": "suno-v6", "customMode": True,
+                                     "title": "Instrumental", "instrumental": True, "tags": "jazz"})
+        self.assertEqual(request["lyrics"], "")
+        self.assertTrue(request["make_instrumental"])
+
     def test_private_cdn_uses_session_token(self):
         url = _authorized_media_url("https://private-cdn.toonkit.io/user/video.mp4", "session-token")
         self.assertIn("token=session-token", url)

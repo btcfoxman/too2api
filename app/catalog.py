@@ -86,6 +86,17 @@ def bind_prompt(prompt: str, media: dict[str, list[Any]]) -> str:
     return REF_RE.sub(replace, prompt)
 
 
+def _music_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"", "0", "false", "no", "off"}:
+        return False
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    raise ValueError("music flags must be boolean values")
+
+
 def normalize_request(body: dict[str, Any]) -> dict[str, Any]:
     name = str(body.get("model") or "sd-2-0-mini").strip().lower()
     media = {key: _media(body, key[:-1] + "_urls", key) for key in ("images", "videos", "audios")}
@@ -116,23 +127,26 @@ def normalize_request(body: dict[str, Any]) -> dict[str, Any]:
     if name in MUSIC_MODELS or name == "lyria-3.5":
         if name == "lyria-3.5":
             raise ValueError("lyria-3.5 is not available in this Toonkit account's music capabilities")
-        custom = bool(body.get("custom_mode", False))
+        custom = _music_bool(body.get("custom_mode", body.get("customMode", False)))
+        instrumental = _music_bool(body.get("make_instrumental", body.get("makeInstrumental", body.get("instrumental", False))))
         prompt = supplied_prompt
         title = str(body.get("title") or "").strip()
-        lyrics = str(body.get("lyrics") or "").strip()
-        tags = str(body.get("tags") or "").strip()
-        if custom and (not title or not lyrics):
+        lyrics = str(body.get("lyrics") or (supplied_prompt if custom else "")).strip()
+        if instrumental:
+            lyrics = ""
+        tags = str(body.get("tags") or body.get("style") or "").strip()
+        if custom and (not title or (not instrumental and not lyrics)):
             raise ValueError("custom music requires title and lyrics")
         if not custom and not (prompt or tags or lyrics or any(media.values())):
             raise ValueError("music prompt, tags, lyrics or reference media is required")
-        if len(prompt) > 3000 or len(tags) > 1000 or len(lyrics) > 5000 or len(title) > 80:
+        if (not custom and len(prompt) > 3000) or len(tags) > 1000 or len(lyrics) > 5000 or len(title) > 80:
             raise ValueError("music text exceeds Toonkit limits")
         if len(media["images"]) > 5 or len(media["videos"]) > 1 or sum(map(len, media.values())) > 10:
             raise ValueError("music reference media exceeds Toonkit limits")
         return {"model": name, "upstream_model": MUSIC_MODELS[name], "kind": "music",
                 "duration": 0, "resolution": "", "aspect_ratio": "", "prompt": prompt,
                 "title": title, "lyrics": lyrics, "tags": tags, "custom_mode": custom,
-                "make_instrumental": bool(body.get("make_instrumental", False)), **media}
+                "make_instrumental": instrumental, **media}
     spec = MODELS.get(name)
     if spec is None:
         raise ValueError(f"unsupported model: {name}")
